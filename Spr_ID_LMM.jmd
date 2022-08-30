@@ -1,0 +1,152 @@
+# Modeling: SPR Modifier-Noun Collocations
+
+## Setup
+```julia results = "hidden"
+using MixedModels
+using CSV, DataFrames, DataFrameMacros
+using RCall, JellyMe4 
+using CairoMakie, MixedModelsMakie
+using Effects
+
+
+R"""
+library(lme4)
+library(tidyverse)
+library(effects)
+library(corrplot)
+library(ggeffects)
+""";
+```
+
+## Background
+
+
+## Data
+```julia results = "hidden"
+id_spr = CSV.read("/Users/kylamcconnell/Documents/GitHub/id-tree/anon_data/critregion_cog_prep_180822.csv", DataFrame, delim = ",", header = 1);
+
+@rput id_spr;
+```
+
+
+```julia
+R"""
+id_spr %>% 
+  select(bfreq_lz, freq_lz, prev_freq_lz, BTP_lz, length_z, prev_length_z) %>%
+  rename(
+    "log Bigram freq (z-score)" = bfreq_lz,
+    "log Word freq (z-score)" = freq_lz,
+    "log Prev word freq (z-score)" = prev_freq_lz,
+    "log BTP (z-score)" = BTP_lz,
+    "Word length (z-score)" = length_z,
+    "Prev word length (z-score)" = prev_length_z
+  ) %>%
+  cor(method="pearson") %>% 
+  corrplot(method="number", type="lower")
+"""
+```
+
+```julia
+R"""
+id_spr %>% 
+  distinct(id, .keep_all=TRUE) %>% 
+  mutate(across(c(simple_rt_z, complex_rt_z, navon_z, flanker_z, rst_mem_z, big5_O_cz, big5_C_cz, big5_E_cz, big5_A_cz, big5_N_cz, age_z, reading_exp_z), as.numeric)) %>%
+  select(simple_rt_z, complex_rt_z, navon_z, flanker_z, rst_mem_z, big5_O_cz, big5_C_cz, big5_E_cz, big5_A_cz, big5_N_cz, reading_exp_z, age_z, reading_exp_z) %>%
+  rename(
+    "Simple Reaction Speed (z)" = simple_rt_z, 
+    "Complex Reaction Speed (z)" = complex_rt_z, 
+    "Navon Shifting Task (z)" = navon_z, 
+    "Flanker Inhibition Task (z)" = flanker_z, 
+    "Verbal Working Memory (z)" = rst_mem_z, 
+    "Big 5: Openness (z)" = big5_O_cz,
+    "Big 5: Conscientiousness (z)" = big5_C_cz,
+    "Big 5: Extraversion (z)" = big5_E_cz,
+    "Big 5: Agreeableness (z)" = big5_A_cz,
+    "Big 5: Neuroticism (z)" = big5_N_cz,
+    "Age (z)" = age_z,
+    "Reading experience (z)" = reading_exp_z
+  ) %>%
+  cor(method = "spearman") %>% 
+  corrplot(method="number", type="lower")
+"""
+```
+
+
+### Set contrasts
+```julia results = "hidden"
+cntrsts = Dict(:position => EffectsCoding(base="spillover_2"),
+         :education => EffectsCoding(base="High school or Trade school"),
+         :origin => EffectsCoding(base="USA"),
+         :id => Grouping(),
+         :w1 => Grouping(),
+         :w2 => Grouping()
+        );
+```
+
+## Mixed model
+
+Take covariates as random effects terms and check variance-covariance matrix for overfitting.
+
+```julia results = "hidden"
+btp_f = @formula (logRT ~ 1 + BTP_lz & navon_z & position + BTP_lz & flanker_z & position + BTP_lz * (complex_rt_z + rst_mem_z + navon_z + flanker_z + big5_O_cz + big5_C_cz + big5_E_cz + big5_A_cz + big5_N_cz + age_z ) + position + trial_number_z + word_number_z + length_z + prev_length_z + origin + education +
+               (1 + trial_number_z + word_number_z + length_z + prev_length_z | id) + 
+               (1 + trial_number_z | w1) +
+               (1 + trial_number_z| w2));
+model_btp = fit(MixedModel, btp_f, id_spr, contrasts = cntrsts);
+model_btp.rePCA
+```
+
+Looks good, so look at model output: 
+```julia
+show(model_btp)
+```
+
+## Check model
+
+```julia 
+scatter(fitted(model_btp), residuals(model_btp))
+```
+
+```julia 
+btp_model = (model_btp, id_spr);
+@rput btp_model;
+
+R"performance::check_collinearity(btp_model)"
+
+R"""
+qqnorm(resid(btp_model))
+qqline(resid(btp_model))
+"""
+```
+
+## Plot effects
+```julia 
+R"""
+btp_flanker <- plot(ggpredict(btp_model, terms = c("BTP_lz", "flanker_z")), facet = T, colors = "viridis") +
+labs(title = "Predicted BTP effect by Flanker score",
+subtitle = "at the mean (133.6ms) and +/- 1SD (66.9ms)",
+x = "BTP", 
+y = "logRT")
+
+ggsave("~/Documents/GitHub/id-tree/fig/btp_flanker_082322.pdf", btp_flanker, height = 4, width = 7, units = "in")
+""";
+
+R"mean(id_spr$flanker)"
+R"sd(id_spr$flanker)"
+```
+
+```julia 
+R"""
+btp_navon <- plot(ggpredict(btp_model, terms = c("BTP_lz", "navon_z[-1.5, 1.5]")), facet = T, colors = "viridis")+
+labs(title = "Predicted BTP effect by Navon score",
+subtitle = "at 1.5SD above mean (384.6ms) and 1.5SD below mean (-468.8ms)",
+x = "BTP", 
+y = "logRT")
+
+ggsave("~/Documents/GitHub/id-tree/fig/btp_navon_082322.pdf", btp_navon, height = 4, width = 6, units = "in")
+""";
+
+R"mean(id_spr$navon) + (1.5 * sd(id_spr$navon))"
+R"mean(id_spr$navon) - (1.5 * sd(id_spr$navon))"
+```
+

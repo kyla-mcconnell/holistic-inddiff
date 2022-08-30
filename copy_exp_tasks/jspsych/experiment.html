@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<meta charset="UTF-8">
+<html>
+
+    <head>
+        <title>Experiment Part J</title>
+		<script src="jspsych/jspsych.js"></script>
+		<script src="PluginDetect.js"></script>
+		<script src="util_md5.js"></script>
+		<script src="jspsych/plugins/jspsych-html-keyboard-response.js"></script>
+		<script src="jspsych/plugins/jspsych-image-keyboard-response.js"></script>
+    <script src="jspsych/plugins/jspsych-survey-text.js"></script>
+    <script src="jspsych/plugins/jspsych-poldrack-text.js"></script>
+		<!--<script src="http://wzrd.in/standalone/uuid%2Fv1@latest"></script>-->
+
+		<!-- Cookie handling JS code. -->
+		<script type="text/javascript" src="https://www.psycholinguistics.ml/index/cookie.js"></script>
+
+		<link href="jspsych/css/jspsych.css" rel="stylesheet" type="text/css"></link>
+    </head>
+    <body>
+	</body>
+
+  <script>
+
+    /* create timeline */
+    var timeline = [];
+
+    /* define welcome message trial */
+    var welcome = {
+      type: "html-keyboard-response",
+      stimulus: "Welcome to the next task. Press any key to begin."
+    };
+    timeline.push(welcome);
+
+    /* define instructions trial */
+    var instructions = {
+      type: "html-keyboard-response",
+      stimulus: "<p>In this experiment, a circle will appear in the center " +
+          "of the screen.</p> When the circle appears, " +
+          "press the letter <strong>F</strong> on the keyboard as fast as you can.</p>" +
+          "<p>Be careful! <strong>Do not press a key before you see the circle! </strong>" +
+          "If you do, you will take a penalty to your time.</p>" +
+          "<img src='img/blue.png'></img>" +
+          "<p class='small'><strong>Press the F key</strong></p>"+
+          "<p>Press any key to begin.</p>",
+      post_trial_gap: 2000
+    };
+    timeline.push(instructions);
+
+    /* test trials */
+
+    var test_stimuli_single = [
+      { stimulus: "img/blue.png", data: { test_part: 'test_single', correct_response: 'f' } }
+    ];
+
+    var test_stimuli = [
+      { stimulus: "img/blue.png", data: { test_part: 'test', correct_response: 'f' } },
+      { stimulus: "img/orange.png", data: { test_part: 'test', correct_response: 'j' } }
+    ];
+
+    var fixation = {
+      type: 'html-keyboard-response',
+      stimulus: '<div style="font-size:60px;">+</div>',
+      choices: jsPsych.NO_KEYS,
+      trial_duration: function(){
+        return jsPsych.randomization.sampleWithoutReplacement([250, 500, 750, 1000, 1250, 1500, 1750, 2000], 1)[0];
+      },
+      data: {test_part: 'fixation'}
+    }
+
+    var test = {
+      type: "image-keyboard-response",
+      stimulus: jsPsych.timelineVariable('stimulus'),
+      choices: ['f', 'j'],
+      data: jsPsych.timelineVariable('data'),
+      on_finish: function(data){
+        data.correct = data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode(data.correct_response);
+      },
+    }
+
+    var test_procedure_single = {
+      timeline: [fixation, test],
+      timeline_variables: test_stimuli_single,
+      repetitions: 20, //20
+      randomize_order: true
+    }
+    timeline.push(test_procedure_single);
+
+    var instructions_2 = {
+      type: "html-keyboard-response",
+      stimulus: "<p>Good job!</p><p>Now, the task will include both blue and orange cirles. </p>"+
+          "If the circle is <strong>blue</strong>, " +
+          "press the letter <strong>F</strong> on the keyboard as fast as you can.</p>" +
+          "<p>If the circle is <strong>orange</strong>, press the letter <strong>J</strong> " +
+          "as fast as you can.</p>" +
+          "<img src='img/blue.png'></img><img src='img/orange.png'></img>" +
+          "<p class='small'><strong>Press the F key for blue / Press the J key for orange</strong></p></div>" +
+          "</div>"+
+          "<p>Press ENTER to continue.</p>",
+      post_trial_gap: 2000,
+      choices: [13]
+    };
+    timeline.push(instructions_2);
+
+    var test_procedure = {
+      timeline: [fixation, test],
+      timeline_variables: test_stimuli,
+      repetitions: 20, //20
+      randomize_order: true
+    }
+    timeline.push(test_procedure);
+
+    // var post_task_block = {
+    //    type: 'survey-text',
+    //    data: {
+    //        trial_id: "post task questions"
+    //    },
+    //    questions: ['<p class = center-block-text style = "font-size: 20px">Please summarize what you were asked to do in this task.</p>',
+    //               '<p class = center-block-text style = "font-size: 20px">Do you have any comments about this task?</p>'],
+    //    rows: [15, 15],
+    //    columns: [60,60]
+    // }
+    // timeline.push(post_task_block);
+    //
+    // var end_block = {
+    //   type: 'poldrack-text',
+    //   data: {
+    //     trial_id: "end",
+    //     exp_id: 'circles'
+    //   },
+    //   timing_response: 180000,
+    //   text: '<div class = centerbox><p class = center-block-text>Thanks for completing this task!</p><p class = center-block-text>Press <strong>enter</strong> to continue.</p></div>',
+    //   cont_key: [13],
+    //   timing_post_trial: 0
+    // }
+    // timeline.push(post_task_block);
+
+    var user_id = getID();
+
+    /* start the experiment */
+    jsPsych.init({
+      timeline: timeline,
+      on_finish: function() {
+		saveData(user_id, jsPsych.data.get().csv());
+      }
+    });
+  </script>
+
+</html>

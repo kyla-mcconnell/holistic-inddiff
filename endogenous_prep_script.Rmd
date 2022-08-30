@@ -1,0 +1,449 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# SPR Preparation Script
+
+Goals: (1) Split question and sentence data, (2) Add trial number column in order to track habituation effects, (3) Add item IDs and stats, (4) Log transform RTs and word frequencies, (5) Denote stimuli sets, (6) Center and scale numeric predictors
+
+## Packages & Functions
+```{r}
+library(tidyverse)
+library(corrplot)
+
+scale_this <- function(x){
+  (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+```
+
+
+## Read in data
+There are a lot of unnecessary columns in the data, mostly participant info (ex: reading_disability is always "no" because no participants with a reading disability were not recruited). Drop these columns.
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+spr_anon <- read_tsv("data_anon.txt") %>%
+  rename(age = age.y) %>%
+  select(-c("English speaking Monolingual", "First Language", "Literacy Difficulties", "Were you raised monolingual?", "Bilingual", "Language related disorders", "bilingual", "Sex", "Nationality", "age.x", "question_identifier", "Country of Birth", "Current Country of Residence", "Employment Status", "Student Status", "Highest education level completed", "Ethnicity", "Fluent languages", "Gender identity", "Handedness", num_approvals, num_rejections, prolific_score, started_datetime, completed_date_time, reviewed_at_datetime, entered_code, time_started, status, time_taken, axcpt_version, repeats, reading_disability, nativelang, reading_amount, reading_enjoyment))
+```
+
+## Descriptive Stats 
+```{r}
+spr_anon %>% 
+  distinct(id, .keep_all = T) %>% 
+  count(sex)
+
+spr_anon %>% 
+  distinct(id, .keep_all = T) %>% 
+  count(origin)
+
+spr_anon %>% 
+  distinct(id, .keep_all = T) %>% 
+  summarize(range(age), median(age))
+```
+
+## Split question and sentence data
+```{r}
+spr_anon <- spr_anon %>% 
+  mutate(question_sentence = lag(full_sentence)) #make temporary column to add full sentence to question data
+
+questions <- subset(spr_anon, type == "Question")
+sentences <- subset(spr_anon, type == "DashedSentence")
+```
+
+Process question data:
+1. remove columns that are meaningless for question data
+2. rename columns based on question data
+3. remove the "1" inserted in front of the value for many columns
+4. remove practice items
+5. correct column types
+```{r}
+questions <- questions %>%
+  rename(full_question = word_in_sentence, answer_selection = item, correct = RT, RT = "?") %>%
+  mutate(full_question = substr(full_question, 2, length(full_question)), 
+         answer_selection = substr(answer_selection, 2, length(full_question)), 
+         correct = as.numeric(substr(correct, 2, length(full_question))), 
+         RT = as.numeric(RT)) %>%
+  filter(group != "practice") %>%
+  select(c(id, question_sentence, correct)) %>%
+  rename(full_sentence = question_sentence,
+         question = correct)
+```
+
+Process sentence data:
+1. remove columns that are meaningless for sentence data
+2. remove practice items
+3. correct column types
+```{r}
+sentences <- sentences %>%
+  select(-c("?", question_sentence)) %>% 
+  filter(group != "practice") %>%
+  mutate(RT = as.numeric(RT), word_in_sentence = as.numeric(word_in_sentence))
+```
+
+Add question correct/incorrect back to sentence data
+```{r}
+sentences <- left_join(sentences, questions) %>% 
+  mutate(question = as.character(question),
+        question = replace_na(question, "no_question"),
+         question = ifelse(question == 1, "correct",
+                          ifelse(question == 0, "incorrect",
+                                 question)))
+
+rm(questions)
+rm(spr_anon)
+```
+
+## Add trial number
+Add trial_number column which contains the number of the WORD being read (not sentence).
+```{r}
+sentences <- sentences %>%
+  group_by(id) %>%
+  mutate(trial_number = row_number()) %>%
+  ungroup()
+```
+
+## Add item IDs
+Need the file Experiment1_all.csv for this, which is the original stimuli list. Also change column names to be all snake_case.
+```{r}
+stimuli <- read_csv("../coca_stats/Experiment1_all.csv")
+
+stimuli <- stimuli %>%
+  select(ItemID, HeadID, FullSentence, bigram, W1, W2) %>% 
+  rename(item_id = ItemID, 
+         head_id = HeadID,
+         full_sentence = FullSentence, 
+         w1 = W1,
+         w2 = W2)
+
+sentences <- sentences %>%
+  mutate(full_sentence = sub("%2C", ",", full_sentence)) %>%
+  left_join(stimuli)
+
+rm(stimuli)
+```
+
+## Denote critical vs. control items
+Items with IDs less than 150 are the original, critical items. Items with IDs above this are semantic synonyms, distractors for the current purpose.
+
+Additionally, the final two number of the Item ID reveal the grouping, here simplified to letters.
+
+```{r}
+sentences <- sentences %>% 
+  mutate(critical_pairs = ifelse(as.numeric(substring(item_id, 1, 3)) > 150, "semantic_distractor", "critical"),
+         bigram_identifier = ifelse(str_sub(item_id,-2,-1) == "01", "A",
+                                    ifelse(str_sub(item_id,-2,-1) == "02", "B",
+                                           ifelse(str_sub(item_id,-2,-1) == "03", "C",
+                                                  ifelse(str_sub(item_id,-2,-1) == "04", "D", "ERROR")))))
+```
+
+## Add word and bigram frequencies
+
+```{r}
+bfreqs<- read_csv("../coca_wordfreqs/bfreqs_2021.csv") %>% 
+  select(bigram, W1_tagged, W2_tagged, bigram_tagged, bfreq)
+
+sentences <- left_join(sentences, bfreqs)
+```
+
+```{r}
+wfreqs<- read_csv("../coca_wordfreqs/wfreqs_2021.csv") %>% 
+  select(-word_stem)
+
+sentences <- sentences %>% 
+  left_join(wfreqs, by=c("W1_tagged" = "word_tagged")) %>% 
+  left_join(wfreqs, by=c("W2_tagged" = "word_tagged")) %>% 
+  rename(W1freq = wfreq.x, 
+         W2freq = wfreq.y)
+```
+
+## Add word length
+```{r}
+sentences <- sentences %>%
+  mutate(item = tolower(gsub('[[:punct:] ]+','',item))) %>%
+  mutate(length = nchar(item)) %>% 
+  mutate(prev_length = lag(length))
+```
+
+## Denote critical words
+```{r}
+sentences <- sentences %>%
+  mutate(w2= tolower(gsub('[[:punct:] ]+','',w2)), w1= tolower(gsub('[[:punct:] ]+','',w1))) %>%
+  mutate(position = ifelse(item == w2 & lag(item) == w1, "noun",
+                           ifelse(item == w1 & lead(item) == w2, "modifier", "other")),
+         position = ifelse(lag(position, n=1) == "noun", "spillover_1",
+                           ifelse(lag(position, n=2) == "noun", "spillover_2",
+                                  ifelse(lag(position, n=3) == "noun", "spillover_3", position)))
+         )
+```
+
+## Denote Set IDs
+Sets represent four items that have either the same w1 (for critical items) or the same w2 (for semantic distractors)
+```{r}
+scores <- read_csv("../coca_stats/stimuli_scored_2608.txt")
+
+set_array <- paste("set", rep(1:73, each = 2), sep="_")
+set_array <- append(set_array, rep("NULL", times=146))
+
+IDs_W2 <- scores %>% 
+  distinct(bigram, .keep_all=TRUE) %>% 
+  mutate(w2 = word(bigram, 2),
+    set_id = set_array) %>% 
+  filter(set_id != "NULL") %>% 
+  select(w2, set_id)
+
+sentences <- left_join(sentences, IDs_W2, by="w2")
+
+rm(scores)
+rm(IDs_W2)
+```
+
+## Add word frequencies and prev word frequencies to critical region
+```{r}
+crit_region_freq <- read_csv("../coca_wordfreqs/sfreqs_2021.csv") %>% 
+  select(word, word_tagged, wfreq)
+
+sentences <- left_join(sentences, crit_region_freq, by= c("item" = "word"))
+
+sentences <- sentences %>% 
+  mutate(prev_freq = lag(wfreq),
+         prev_item = lag(item)) 
+
+rm(crit_region_freq)
+
+# Fix POS issue on 4 itmes
+sentences <- sentences %>% 
+  mutate(wfreq = ifelse(position == "noun" & wfreq != W2freq, W2freq, wfreq)) 
+```
+
+
+## Subset critical region
+
+```{r}
+critical_region <- sentences %>% 
+  filter(position %in% c("noun", "spillover_1", "spillover_2")) 
+
+critical_region %>% 
+  filter(is.na(wfreq))
+```
+
+## Drop bigrams with 0 bfreq
+```{r}
+before <- nrow(critical_region) 
+
+dropped <- critical_region %>% 
+  filter(is.na(bfreq)) %>% 
+  distinct(item_id)
+
+critical_region <- critical_region %>% 
+  drop_na(bfreq)
+
+after <- nrow(critical_region)
+
+paste("Percent data removed:", round((before-after)/before * 100,2))
+paste("Rows removed:", length(dropped$item_id))
+```
+
+## Remove duplicate w1s and w2s
+6 items removed
+```{r}
+critical_region %>% 
+  group_by(w1) %>% 
+  count(w1) %>% 
+  arrange(desc(n)) 
+
+critical_region %>% 
+  group_by(w2) %>% 
+  count(w2) %>% 
+  arrange(desc(n)) 
+
+critical_region %>% 
+  filter(w1 %in% c("apparent", "increased", "sudden")) %>% 
+  distinct(bigram) %>% 
+  arrange(bigram)
+
+critical_region <- critical_region %>% 
+  filter(!(bigram %in% c("apparent connection", "apparent interpretations", "increased education", "increased use", "sudden gust", "sudden surge"))) 
+```
+
+## Remove RTs outside of 2.5SDs of each participants mean (and under 100ms)
+```{r}
+before <- nrow(critical_region)
+
+critical_region <- critical_region %>% 
+  filter(RT > 100) %>%
+  group_by(id) %>%
+  summarize(par_mean = mean(RT), par_sd = sd(RT)) %>%
+  right_join(critical_region, by="id") %>%
+  filter((RT > (par_mean - 2.5 * par_sd)) & (RT < (par_mean + 2.5 * par_sd))) %>%
+  ungroup() %>%
+  select(-c(par_mean, par_sd))
+
+after <- nrow(critical_region)
+
+paste("Percent data removed:", round((before-after)/before * 100,2))
+```
+
+## Log transform and center/scale relevant variables
+```{r}
+before <- nrow(critical_region)
+
+critical_region <- critical_region %>%
+  filter(bfreq > 0 & wfreq > 0 & W1freq > 0 & W2freq > 0) %>% 
+  mutate(w1_freq_lz = scale_this(log(W1freq)),
+         w2_freq_lz = scale_this(log(W2freq)),
+         freq_lz = scale_this(log(wfreq)), 
+         prev_freq_lz = scale_this(log(prev_freq)),
+         bfreq_l = log(bfreq),
+         bfreq_lz = scale_this(bfreq_l),
+         logRT = log(RT), 
+         length_z = scale_this(length),
+         prev_length_z = scale_this(prev_length),
+         trial_number_z = scale_this(trial_number),
+         word_number_z = scale_this(word_in_sentence),
+         age_z = scale_this(age),
+         vocab = vocab1_correct,
+         vocab_z = scale_this(vocab),
+         wgt = WGT_correct, 
+         wgt_z = scale_this(wgt),
+         art = ART_correct - ART_incorrect,
+         art_z = scale_this(art),
+         reading_exp_z = scale_this(vocab_z + wgt_z + art_z))
+
+after <- nrow(critical_region)
+
+paste("Percent data removed:", round((before-after)/before * 100,2))
+```
+
+## Add ftp and btp
+```{r}
+critical_region <- critical_region %>% 
+  mutate(for_tp = bfreq / W1freq,
+         back_tp = bfreq / W2freq,
+         for_tp_l = log(for_tp),
+         back_tp_l = log(back_tp),
+         for_tp_lz = scale_this(log(for_tp)),
+         back_tp_lz = scale_this(log(back_tp)))
+```
+
+## Reduce education variable to three levels
+```{r}
+critical_region <- critical_region %>% 
+  mutate(education = as.factor(ifelse(education == 5, 4, education)),
+         education = fct_recode(education,
+                                "High school or Trade school" = "1",
+                                "High school or Trade school" = "2",
+                                "Undergraduate" = "3",
+                                "Grad school" = "4"))
+```
+
+## Check for NAs in critical region
+```{r}
+sapply(critical_region, function(x) sum(is.na(x)))
+```
+
+## Remove columns that won't be used
+Either because they are now unnecessary (i.e. total error in processing speed task) or because they have been  
+```{r}
+critregion_cog <- critical_region %>% 
+  select(-c(starts_with("WGT"), starts_with("ART"), starts_with("vocab1"), circles_total_error, type)) %>% 
+  rename(complex_rt = circles_complex_rt,
+         simple_rt = circles_simple_rt)
+
+```
+
+# Combine simple/complex reaction time into one reaction speed measure 
+```{r}
+critregion_cog <- critregion_cog  %>% 
+  mutate(reaction_speed = complex_rt - simple_rt)
+```
+
+# Scale predictors and prepare difference scores
+```{r}
+critregion_cog <- critregion_cog %>%
+  mutate(
+    big5_O_c = (big5_O - mean(c(big5_O, big5_C, big5_E, big5_A, big5_N))) / sd(c(big5_O, big5_C, big5_E, big5_A, big5_N)),
+    big5_C_c = (big5_C - mean(c(big5_O, big5_C, big5_E, big5_A, big5_N))) / sd(c(big5_O, big5_C, big5_E, big5_A, big5_N)),
+    big5_E_c = (big5_E - mean(c(big5_O, big5_C, big5_E, big5_A, big5_N))) / sd(c(big5_O, big5_C, big5_E, big5_A, big5_N)),
+    big5_A_c = (big5_A - mean(c(big5_O, big5_C, big5_E, big5_A, big5_N))) / sd(c(big5_O, big5_C, big5_E, big5_A, big5_N)),
+    big5_N_c = (big5_N - mean(c(big5_O, big5_C, big5_E, big5_A, big5_N))) / sd(c(big5_O, big5_C, big5_E, big5_A, big5_N)),
+    axcpt_proactive = axcpt_rt_AY - axcpt_rt_BX, 
+    axcpt_proactive_z = scale_this(axcpt_proactive),
+    flanker = flanker_rt_incompat - flanker_rt_compat,
+    flanker_z = scale_this(flanker),
+    navon = navon_rt_local - navon_rt_global,
+    navon_z = scale_this(navon),
+    complex_rt_z = scale_this(complex_rt),
+    simple_rt_z = scale_this(simple_rt),
+    reaction_speed_z = scale_this(reaction_speed),
+    word_in_sentence_z = scale_this(word_in_sentence),
+    rst_mem_z = scale_this(rst_mem_average),
+    big5_O_cz = scale_this(big5_O_c),
+    big5_C_cz = scale_this(big5_C_c),
+    big5_E_cz = scale_this(big5_E_c),
+    big5_A_cz = scale_this(big5_A_c),
+    big5_N_cz = scale_this(big5_N_c),
+  ) %>% 
+  select(-c(big5_O, big5_C, big5_E, big5_A, big5_N, starts_with("axcpt_error"), starts_with("axcpt_rt"), flanker_rt_incompat, flanker_rt_compat, flanker_total_error, navon_rt_local, navon_rt_global, navon_total_error, ravens_total_error, handness)) %>%
+  rename(BTP_lz = back_tp_lz,
+         FTP_lz = for_tp_lz)
+```
+
+## Select only variables needed for analysis
+
+Does not include:
+- Raven's progressive matrices: implemented without a time limit, shows strong speed-accuracy tradeoff, 10 participants missing speed because task broke
+- AXCPT: very small trial number and relatively difficult tasks meant that at least 10 participants were missing one of the two critical conditions (AY or BX) 
+```{r}
+critregion_cog <- critregion_cog %>% 
+  select(
+    id, item, bigram, w1, w2, logRT, age, age_z, education, origin, reading_exp_z, word_number_z, word_in_sentence_z, trial_number_z, prev_length_z, bfreq_lz, BTP_lz, FTP_lz, freq_lz, prev_freq_lz, set_id, length_z, FTP_lz, BTP_lz, complex_rt_z, simple_rt_z, navon, navon_z, flanker, flanker_z, rst_comp_correct, rst_mem_average, rst_mem_z, big5_O_c, big5_O_cz, big5_C_c, big5_C_cz, big5_E_c, big5_E_cz, big5_A_c, big5_A_cz, big5_N_c, big5_N_cz, reaction_speed_z, position
+)
+
+#write_tsv(critregion_cog, "~/Documents/GitHub/id-tree/anon_data/critregion_cog.txt")
+```
+
+# Ensure categorical variables are read as factor
+```{r}
+spr_cog <- critregion_cog %>% 
+  mutate(across(where(is.character), as.factor)) 
+
+spr_cog$position <- factor(spr_cog$position, levels = c("noun", "spillover_1", "spillover_2"))
+```
+
+# Impute missing data
+4 participants missing Navon data -- NAs replaced with mean value
+```{r}
+spr_cog %>% 
+  drop_na(navon) %>% 
+  distinct(id) #4 participants missing data for navon
+
+spr_cog <- spr_cog %>% 
+  mutate(navon_z = replace_na(navon_z, mean(spr_cog$navon_z, na.rm=T)),
+         navon = replace_na(navon, mean(spr_cog$navon, na.rm=T))) 
+```
+
+2 participants missing reading experience metric
+```{r}
+spr_cog %>% 
+  drop_na(reading_exp_z) %>% 
+  distinct(id) #2 participants missing data for reading exp
+
+spr_cog <- spr_cog %>% 
+  mutate(reading_exp_z = replace_na(reading_exp_z, mean(spr_cog$reading_exp_z, na.rm=T))) 
+```
+
+
+## Check for NAs in critical region
+```{r}
+spr_cog %>% 
+  sapply(function(x) sum(is.na(x)))
+```
+
+
+# Write data
+```{r}
+write_csv(spr_cog, "critregion_cog_prep_180822.csv")
+```
+
+
